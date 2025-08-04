@@ -1,12 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Literal
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Literal
 
-# Sample training data
+# === TRAINING DATA ===
 mood_data = {
     "happy": ["I feel great today!", "Life is beautiful", "This is the best day ever"],
     "sad": ["I miss them", "Life feels empty", "I want to cry"],
@@ -21,16 +22,31 @@ for mood, examples in mood_data.items():
     texts.extend(examples)
     labels.extend([mood] * len(examples))
 
+# === PIPELINE ===
 model = Pipeline([
     ('vect', CountVectorizer()),
     ('clf', MultinomialNB())
 ])
 model.fit(texts, labels)
 
+# === FASTAPI APP ===
+app = FastAPI()
+
+# === CORS ===
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# === REQUEST MODEL ===
 class InputText(BaseModel):
     sentence: str
     platform: Literal['youtube', 'spotify', 'jiomusic'] = 'youtube'
 
+# === LINK GENERATOR ===
 def generate_link(mood: str, platform: str) -> str:
     query = f"{mood} music"
     if platform == 'youtube':
@@ -41,16 +57,12 @@ def generate_link(mood: str, platform: str) -> str:
         return f"https://www.jiosaavn.com/search/{query.replace(' ', '%20')}"
     return ""
 
-app = FastAPI()
+# === ROOT ENDPOINT ===
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Mood Prediction API. Use /predict_mood to get started."}
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# === MOOD PREDICTION ENDPOINT ===
 @app.post("/predict_mood")
 def predict_mood(input_text: InputText):
     mood = model.predict([input_text.sentence])[0]
@@ -59,3 +71,11 @@ def predict_mood(input_text: InputText):
         "predicted_mood": mood,
         "suggestion_link": suggestion_url
     }
+
+# === CUSTOM 404 ERROR HANDLER ===
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={"error": "The requested resource was not found. Please check your URL."},
+    )
