@@ -1,38 +1,18 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Literal
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.naive_bayes import MultinomialNB
-from sklearn.pipeline import Pipeline
+from uuid import uuid4
+from PIL import Image
+import os
+import torch
+from diffusers import StableDiffusionPipeline
 
-# === TRAINING DATA ===
-mood_data = {
-    "happy": ["I feel great today!", "Life is beautiful", "This is the best day ever"],
-    "sad": ["I miss them", "Life feels empty", "I want to cry"],
-    "angry": ["This is infuriating", "I'm so mad right now", "Why can't they listen?"],
-    "relaxed": ["Just chilling", "Feeling peaceful", "I’m enjoying the calm"],
-    "excited": ["Can’t wait!", "This is amazing", "So thrilled about this"]
-}
-
-texts = []
-labels = []
-for mood, examples in mood_data.items():
-    texts.extend(examples)
-    labels.extend([mood] * len(examples))
-
-# === PIPELINE ===
-model = Pipeline([
-    ('vect', CountVectorizer()),
-    ('clf', MultinomialNB())
-])
-model.fit(texts, labels)
-
-# === FASTAPI APP ===
+# === FastAPI App ===
 app = FastAPI()
 
-# === CORS ===
+# === CORS Middleware ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,38 +21,67 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === REQUEST MODEL ===
-class InputText(BaseModel):
-    sentence: str
-    platform: Literal['youtube', 'spotify', 'jiomusic'] = 'youtube'
+# === Image Output Directory ===
+IMAGE_DIR = "generated_images"
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
-# === LINK GENERATOR ===
-def generate_link(mood: str, platform: str) -> str:
-    query = f"{mood} music"
-    if platform == 'youtube':
-        return f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
-    elif platform == 'spotify':
-        return f"https://open.spotify.com/search/{query.replace(' ', '%20')}"
-    elif platform == 'jiomusic':
-        return f"https://www.jiosaavn.com/search/{query.replace(' ', '%20')}"
-    return ""
+# === Load Stable Diffusion Model ===
+device = "cuda" if torch.cuda.is_available() else "cpu"
+pipe = StableDiffusionPipeline.from_pretrained(
+    "runwayml/stable-diffusion-v1-5",
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    safety_checker=None  # optionally disable NSFW checker
+).to(device)
 
-# === ROOT ENDPOINT ===
+# === Emotion to Prompt Mapping ===
+emotion_prompts = {
+    "happy": "beautiful anime-style forest on a sunny day, vibrant colors, joy",
+    "sad": "lonely anime figure by a rainy window, blue tones, emotional, melancholy",
+    "angry": "peaceful zen garden at sunset, soft light, calming anime scene",
+    "relaxed": "anime character meditating in a forest, tranquil, soft pastels",
+    "excited": "anime-style fireworks over a cityscape, vibrant night, joyful crowd"
+}
+
+# === Request Model ===
+class ArtRequest(BaseModel):
+    emotion: Literal["happy", "sad", "angry", "relaxed", "excited"]
+
+# === Generate Image from Prompt ===
+def generate_image(prompt: str) -> str:
+    image = pipe(prompt, num_inference_steps=30, guidance_scale=7.5).images[0]
+    filename = f"{uuid4().hex}.png"
+    filepath = os.path.join(IMAGE_DIR, filename)
+    image.save(filepath)
+    return filepath
+
+# === Root Endpoint ===
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Mood Prediction API. Use /predict_mood to get started."}
+    return {"message": "Welcome to the Emotion-Based Art Generator API. Use /generate_art to create images."}
 
-# === MOOD PREDICTION ENDPOINT ===
-@app.post("/predict_mood")
-def predict_mood(input_text: InputText):
-    mood = model.predict([input_text.sentence])[0]
-    suggestion_url = generate_link(mood, input_text.platform)
-    return {
-        "predicted_mood": mood,
-        "suggestion_link": suggestion_url
-    }
+# === Image Generation Endpoint ===
+@app.post("/generate_art")
+def generate_art(request: ArtRequest):
+    prompt = emotion_prompts.get(request.emotion, "anime fantasy landscape")
+    try:
+        image_path = generate_image(prompt)
+        return {
+            "emotion": request.emotion,
+            "prompt_used": prompt,
+            "image_url": f"/download/{os.path.basename(image_path)}"
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-# === CUSTOM 404 ERROR HANDLER ===
+# === Download Image Endpoint ===
+@app.get("/download/{filename}")
+def download_image(filename: str):
+    filepath = os.path.join(IMAGE_DIR, filename)
+    if not os.path.exists(filepath):
+        return JSONResponse(status_code=404, content={"error": "Image not found."})
+    return FileResponse(filepath, media_type="image/png", filename=filename)
+
+# === 404 Custom Handler ===
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
     return JSONResponse(
