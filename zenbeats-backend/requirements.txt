@@ -3,7 +3,7 @@ uvicorn[standard]==0.30.0
 scikit-learn==1.5.0
 diffusers==0.27.2
 transformers==4.43.0
-torch==2.2.2
+torch==2.5.1
 accelerate==0.30.1
 safetensors==0.4.2
 Pillow==10.3.0
